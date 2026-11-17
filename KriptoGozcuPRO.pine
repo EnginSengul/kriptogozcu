@@ -1,0 +1,604 @@
+//@version=5
+// ═════════════════════════════════════════════════════════════════════════════
+//  KRİPTO GÖZCÜ PRO
+//  QQE MOD + SMA Trend + ADX/Hacim/HTF/SuperTrend filtreleri
+//  Otomatik TP1/TP2/SL takibi (BE dahil) • Yoğun S/R • HTF bölge • Bilgi paneli
+// ═════════════════════════════════════════════════════════════════════════════
+indicator("Kripto Gözcü PRO (QQE + Filtre + TP/SL + S/R)", shorttitle="KG PRO", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1) GİRDİLER
+// ─────────────────────────────────────────────────────────────────────────────
+grpTrend = "1) Trend (SMA)"
+lenSMA34 = input.int(34, "SMA Trend",  minval=1, group=grpTrend)
+lenSMA5  = input.int(5,  "SMA Hızlı",  minval=1, group=grpTrend)
+lenSMA11 = input.int(11, "SMA Yavaş",  minval=1, group=grpTrend)
+
+grpQQE = "2) QQE MOD"
+rsiLen     = input.int(6,      "RSI Uzunluğu",                 minval=1,   group=grpQQE)
+smooth     = input.int(5,      "RSI Yumuşatma (EMA)",          minval=1,   group=grpQQE)
+factorSlow = input.float(3.0,  "QQE Yavaş Faktör (BB bandı)",  step=0.01,  group=grpQQE)
+factorFast = input.float(1.61, "QQE Hızlı Faktör (erken çıkış)", step=0.01, group=grpQQE)
+bbLen      = input.int(50,     "BB Uzunluğu",                  minval=1,   group=grpQQE)
+bbMult     = input.float(0.35, "BB Çarpanı",                   step=0.01,  group=grpQQE)
+thresh     = input.float(1.5,  "Histogram Eşiği",              step=0.1,   group=grpQQE)
+
+grpExec = "3) Sinyal / Pozisyon"
+useClose   = input.bool(true,  "Sadece mum kapanışında sinyal (repaint yok)", group=grpExec)
+cooldown   = input.int(3,      "Girişler arası min. bar (cooldown)", minval=0, group=grpExec)
+catchBars  = input.int(2,      "QQE yakalama penceresi (bar)",       minval=0, group=grpExec)
+allowRev   = input.bool(true,  "Ters sinyalde pozisyonu çevir",      group=grpExec)
+useQQEExit = input.bool(true,  "QQE momentum çıkışı",                group=grpExec)
+qqeExitTyp = input.string("RSI 50 (klasik)", "QQE çıkış tipi", options=["RSI 50 (klasik)", "QQE Hızlı Çizgi (erken)"], group=grpExec)
+useSTExit  = input.bool(false, "SuperTrend dönüşünde çık",           group=grpExec)
+
+grpFlt = "4) Giriş Filtreleri"
+useADX  = input.bool(true,   "ADX filtresi (yatay piyasayı ele)", inline="adx", group=grpFlt)
+adxMin  = input.float(18,    "Min ADX", step=1,                   inline="adx", group=grpFlt)
+adxLen  = input.int(14,      "ADX Uzunluk", minval=1,             group=grpFlt)
+useVol  = input.bool(false,  "Hacim filtresi",                    inline="vol", group=grpFlt)
+volMult = input.float(1.0,   "x Ortalama", step=0.1, minval=0,    inline="vol", group=grpFlt)
+volLen  = input.int(20,      "Hacim Ort. Uzunluk", minval=1,      group=grpFlt)
+useHTF  = input.bool(false,  "Üst zaman dilimi EMA filtresi",     group=grpFlt)
+htfTf   = input.timeframe("240", "HTF Zaman Dilimi",              group=grpFlt)
+htfLen  = input.int(50,      "HTF EMA Uzunluk", minval=1,         group=grpFlt)
+useSTF  = input.bool(false,  "SuperTrend yön filtresi",           group=grpFlt)
+
+grpST = "5) SuperTrend"
+showST   = input.bool(true,  "SuperTrend çiz",          group=grpST)
+stFactor = input.float(3.0,  "Faktör", step=0.1,        group=grpST)
+stLen    = input.int(10,     "ATR Uzunluk", minval=1,   group=grpST)
+
+grpTPSL = "6) Kâr Al (TP) / Zarar Durdur (SL)"
+useTPSL   = input.bool(true,  "TP/SL takibi (SL veya TP2'de pozisyonu kapat)", group=grpTPSL)
+showTPSL  = input.bool(true,  "Seviyeleri çiz",                                 group=grpTPSL)
+slMode    = input.string("ATR", "Stop tipi", options=["ATR", "Swing"],          group=grpTPSL)
+slAtrMult = input.float(1.5,  "ATR Stop (ATR x)",          step=0.1,  minval=0.1, group=grpTPSL)
+swingLen  = input.int(10,     "Swing geriye bakış (bar)",  minval=2,              group=grpTPSL)
+swingBuf  = input.float(0.2,  "Swing tampon (ATR x)",      step=0.05, minval=0,   group=grpTPSL)
+tp1R      = input.float(1.5,  "TP1 (Risk x)",              step=0.1,  minval=0.1, group=grpTPSL)
+tp2R      = input.float(3.0,  "TP2 (Risk x)",              step=0.1,  minval=0.1, group=grpTPSL)
+tp1Pct    = input.float(50,   "TP1'de kapatılan % (istatistik)", minval=0, maxval=100, step=5, group=grpTPSL)
+moveBE    = input.bool(true,  "TP1 sonrası stopu girişe çek (BE)",                group=grpTPSL)
+
+grp4H = "7) Üst Zaman Dilimi Bölgesi"
+show4H        = input.bool(true, "HTF önceki mum High/Low/Mid bölgesi", group=grp4H)
+zoneTf        = input.timeframe("240", "Bölge zaman dilimi",            group=grp4H)
+color4H_High  = input.color(color.new(color.green, 0), "Üst Çizgi (High)", group=grp4H)
+color4H_Low   = input.color(color.new(color.red, 0),   "Alt Çizgi (Low)",  group=grp4H)
+transpZone    = input.int(85, "Bölge Şeffaflığı (0-100)", minval=0, maxval=100, group=grp4H)
+show4HClose   = input.bool(true, "Kapanış çizgisi",  group=grp4H)
+show4HCloseLb = input.bool(true, "Kapanış etiketi",  group=grp4H)
+closeLblXOff  = input.int(6, "Kapanış etiketi X kaydırma", minval=1, maxval=50, group=grp4H)
+
+grpSR = "8) Yoğun Destek / Direnç"
+showSR       = input.bool(true,   "En yoğun 2 Destek + 2 Direnç",  group=grpSR)
+pivotLen     = input.int(10,      "Pivot hassasiyeti", minval=2,   group=grpSR)
+srMaxLevels  = input.int(80,      "Havuz max seviye", minval=10, maxval=300, group=grpSR)
+srTolAtrMul  = input.float(0.70,  "Birleştirme toleransı (ATR x)", step=0.05, group=grpSR)
+srMinHits    = input.int(3,       "Min temas (çizmek için)", minval=1, maxval=50, group=grpSR)
+srLookback   = input.int(1200,    "Geçmiş uzunluğu (bar)", minval=50, maxval=5000, group=grpSR)
+srRecentOnly = input.bool(true,   "Sadece lookback içinde temas edenler", group=grpSR)
+srMaxDistATR = input.float(8.0,   "Max mesafe (ATR x)", step=0.5, minval=1.0, group=grpSR)
+showHitsLbl  = input.bool(true,   "R1/R2/S1/S2 etiketleri", group=grpSR)
+lblSizeOpt   = input.string("Normal", "Etiket boyutu", options=["Small", "Normal", "Large"], group=grpSR)
+lblXOffset   = input.int(6,       "Etiket X kaydırma (bar)", minval=1, maxval=50, group=grpSR)
+colRes       = input.color(color.red,   "Direnç rengi", group=grpSR)
+colSup       = input.color(color.green, "Destek rengi", group=grpSR)
+
+grpVis = "9) Görsel / Alarm"
+showSMAs   = input.bool(true,  "SMA çiz",                         group=grpVis)
+showLbl    = input.bool(true,  "Giriş / Çıkış etiketleri",        group=grpVis)
+barColOn   = input.bool(false, "Mumları QQE'ye göre boya",        group=grpVis)
+showTable  = input.bool(true,  "Bilgi paneli",                    group=grpVis)
+tablePosIn = input.string("Sağ Üst", "Panel konumu", options=["Sağ Üst", "Sağ Alt", "Sol Üst", "Sol Alt"], group=grpVis)
+dynAlert   = input.bool(true,  "Detaylı alert() mesajları (SL/TP dahil)", group=grpVis)
+
+lblSize = lblSizeOpt == "Large" ? size.large : lblSizeOpt == "Small" ? size.small : size.normal
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2) YARDIMCI FONKSİYONLAR
+// ─────────────────────────────────────────────────────────────────────────────
+f_px(_v) => na(_v) ? "-" : str.tostring(_v, format.mintick)
+
+f_setLine(_ln, _y, _col, _w, _style) =>
+    line out = _ln
+    if na(out)
+        out := line.new(bar_index, _y, bar_index + 1, _y, color=_col, width=_w, style=_style, extend=extend.both)
+    else
+        line.set_xy1(out, bar_index, _y)
+        line.set_xy2(out, bar_index + 1, _y)
+        line.set_color(out, _col)
+        line.set_width(out, _w)
+        line.set_style(out, _style)
+    out
+
+f_updHLine(_ln, _y, _col, _w, _lb) =>
+    line out = _ln
+    int x1 = math.max(0, bar_index - _lb)
+    int x2 = bar_index + 1
+    if na(out)
+        out := line.new(x1, _y, x2, _y, color=_col, width=_w, extend=extend.right)
+    else
+        line.set_xy1(out, x1, _y)
+        line.set_xy2(out, x2, _y)
+        line.set_color(out, _col)
+        line.set_width(out, _w)
+    out
+
+f_updLbl(_lbl, _y, _txt, _bg, _xoff, _sz) =>
+    label out = _lbl
+    int x = bar_index + _xoff
+    if na(out)
+        out := label.new(x, _y, _txt, style=label.style_label_left, textcolor=color.white, color=_bg, size=_sz)
+    else
+        label.set_xy(out, x, _y)
+        label.set_text(out, _txt)
+        label.set_color(out, _bg)
+        label.set_size(out, _sz)
+    out
+
+f_delLbl(_lbl) =>
+    if not na(_lbl)
+        label.delete(_lbl)
+    label(na)
+
+f_delLine(_ln) =>
+    if not na(_ln)
+        line.delete(_ln)
+    line(na)
+
+// QQE trailing hattı (QQE MOD orijinal mantığı)
+f_qqe(_src, _rsiLen, _sf, _factor) =>
+    int   wilders = _rsiLen * 2 - 1
+    float rsiMa   = ta.ema(ta.rsi(_src, _rsiLen), _sf)
+    float atrRsi  = math.abs(rsiMa[1] - rsiMa)
+    float dar     = ta.ema(ta.ema(atrRsi, wilders), wilders) * _factor
+    float newLong  = rsiMa - dar
+    float newShort = rsiMa + dar
+    var float longBand  = na
+    var float shortBand = na
+    var int   trend     = 1
+    float prevL = nz(longBand, newLong)     // = longBand[1]
+    float prevS = nz(shortBand, newShort)   // = shortBand[1]
+    longBand  := rsiMa[1] > prevL and rsiMa > prevL ? math.max(prevL, newLong)  : newLong
+    shortBand := rsiMa[1] < prevS and rsiMa < prevS ? math.min(prevS, newShort) : newShort
+    bool upX = ta.cross(rsiMa, prevS)
+    bool dnX = ta.cross(prevL, rsiMa)
+    trend := upX ? 1 : dnX ? -1 : trend
+    [rsiMa, trend == 1 ? longBand : shortBand]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3) ÇEKİRDEK HESAPLAR
+// ─────────────────────────────────────────────────────────────────────────────
+atr   = ta.atr(14)
+sma34 = ta.sma(close, lenSMA34)
+sma5  = ta.sma(close, lenSMA5)
+sma11 = ta.sma(close, lenSMA11)
+
+trendLong  = close > sma34 and sma5 > sma11
+trendShort = close < sma34 and sma5 < sma11
+
+// QQE
+[rsSlow, tlSlow] = f_qqe(close, rsiLen, smooth, factorSlow)
+[rsFast, tlFast] = f_qqe(close, rsiLen, smooth, factorFast)
+slowTLc = tlSlow - 50.0
+bbBasis = ta.sma(slowTLc, bbLen)
+bbDev   = bbMult * ta.stdev(slowTLc, bbLen)
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+rsiC    = rsFast - 50.0
+
+qqeHist = rsiC > thresh and (rsSlow - 50.0) > bbUpper ? rsiC : rsiC < -thresh and (rsSlow - 50.0) < bbLower ? rsiC : 0.0
+
+qqeUpEvent = ta.crossover(qqeHist, thresh)
+qqeDnEvent = ta.crossunder(qqeHist, -thresh)
+recentUp   = nz(ta.barssince(qqeUpEvent), 100000) <= catchBars
+recentDown = nz(ta.barssince(qqeDnEvent), 100000) <= catchBars
+
+// Çıkış tetikleri (hepsi her barda hesaplanır)
+x50Dn = ta.crossunder(rsiC, 0)
+x50Up = ta.crossover(rsiC, 0)
+xTLDn = ta.crossunder(rsFast, tlFast)
+xTLUp = ta.crossover(rsFast, tlFast)
+qqeExitL = qqeExitTyp == "RSI 50 (klasik)" ? x50Dn : xTLDn
+qqeExitS = qqeExitTyp == "RSI 50 (klasik)" ? x50Up : xTLUp
+
+// ADX
+[diP, diM, adxV] = ta.dmi(adxLen, adxLen)
+adxOk = not useADX or adxV >= adxMin
+
+// Hacim
+volSma   = ta.sma(volume, volLen)
+volRatio = volSma > 0 ? volume / volSma : na
+volOk    = not useVol or na(volRatio) or volRatio >= volMult
+
+// Üst zaman dilimi EMA (repaint yok: [1] + lookahead_on)
+htfEma    = request.security(syminfo.tickerid, htfTf, ta.ema(close, htfLen)[1], lookahead=barmerge.lookahead_on)
+htfLongOk  = not useHTF or (not na(htfEma) and close > htfEma)
+htfShortOk = not useHTF or (not na(htfEma) and close < htfEma)
+
+// SuperTrend (direction < 0 = yükseliş)
+[stLine, stDir] = ta.supertrend(stFactor, stLen)
+stBull   = stDir < 0
+stFlipDn = stDir > 0 and stDir[1] < 0
+stFlipUp = stDir < 0 and stDir[1] > 0
+stLongOk  = not useSTF or stBull
+stShortOk = not useSTF or not stBull
+
+// Swing stop referansları
+swingLo = ta.lowest(low, swingLen)
+swingHi = ta.highest(high, swingLen)
+
+// Sinyal kalitesi skoru (0-6) – filtre açık/kapalı fark etmeksizin
+longScore  = (trendLong ? 1 : 0)  + (qqeHist > thresh ? 1 : 0)  + (adxV >= adxMin ? 1 : 0) + (nz(volRatio) >= volMult ? 1 : 0) + (not na(htfEma) and close > htfEma ? 1 : 0) + (stBull ? 1 : 0)
+shortScore = (trendShort ? 1 : 0) + (qqeHist < -thresh ? 1 : 0) + (adxV >= adxMin ? 1 : 0) + (nz(volRatio) >= volMult ? 1 : 0) + (not na(htfEma) and close < htfEma ? 1 : 0) + (not stBull ? 1 : 0)
+
+longSetup  = not na(atr) and trendLong  and recentUp   and qqeHist > thresh  and adxOk and volOk and htfLongOk  and stLongOk
+shortSetup = not na(atr) and trendShort and recentDown and qqeHist < -thresh and adxOk and volOk and htfShortOk and stShortOk
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4) POZİSYON MOTORU (Giriş → TP1 → BE → TP2 / SL / QQE / ST / Ters)
+// ─────────────────────────────────────────────────────────────────────────────
+confirmed = useClose ? barstate.isconfirmed : true
+
+var int   pos          = 0
+var float entryPx      = na
+var float slPx         = na
+var float tp1Px        = na
+var float tp2Px        = na
+var float riskPx       = na
+var bool  tp1Done      = false
+var int   entryBar     = na
+var int   lastEntryBar = na
+var int   nTrades      = 0
+var int   nWins        = 0
+var float sumR         = 0.0
+
+bool   evLong  = false
+bool   evShort = false
+bool   evTP1   = false
+bool   evExit  = false
+int    exitDir = 0
+float  exitPx  = na
+string exitWhy = ""
+float  tradeR  = na
+
+if confirmed
+    // A) Açık pozisyonu yönet (giriş mumunda kontrol yok)
+    if pos == 1 and bar_index > entryBar
+        if useTPSL and low <= slPx
+            exitPx  := slPx
+            exitWhy := tp1Done and slPx >= entryPx ? "BE" : "SL"
+        else
+            if useTPSL and not tp1Done and high >= tp1Px
+                tp1Done := true
+                evTP1   := true
+            if useTPSL and high >= tp2Px
+                exitPx  := tp2Px
+                exitWhy := "TP2"
+            else if useSTExit and stFlipDn
+                exitPx  := close
+                exitWhy := "ST"
+            else if useQQEExit and qqeExitL
+                exitPx  := close
+                exitWhy := "QQE"
+            if evTP1 and moveBE and na(exitPx)
+                slPx := entryPx
+    else if pos == -1 and bar_index > entryBar
+        if useTPSL and high >= slPx
+            exitPx  := slPx
+            exitWhy := tp1Done and slPx <= entryPx ? "BE" : "SL"
+        else
+            if useTPSL and not tp1Done and low <= tp1Px
+                tp1Done := true
+                evTP1   := true
+            if useTPSL and low <= tp2Px
+                exitPx  := tp2Px
+                exitWhy := "TP2"
+            else if useSTExit and stFlipUp
+                exitPx  := close
+                exitWhy := "ST"
+            else if useQQEExit and qqeExitS
+                exitPx  := close
+                exitWhy := "QQE"
+            if evTP1 and moveBE and na(exitPx)
+                slPx := entryPx
+
+    // B) Ters sinyal → pozisyonu çevir
+    bool cdOk = na(lastEntryBar) or (bar_index - lastEntryBar >= cooldown)
+    if na(exitPx) and allowRev and cdOk
+        if pos == 1 and shortSetup
+            exitPx  := close
+            exitWhy := "TERS"
+        else if pos == -1 and longSetup
+            exitPx  := close
+            exitWhy := "TERS"
+
+    // C) Çıkışı uygula + istatistik
+    if not na(exitPx) and pos != 0
+        float rExit = (exitPx - entryPx) / riskPx * pos
+        float part  = tp1Done ? tp1Pct / 100.0 : 0.0
+        tradeR  := part * tp1R + (1.0 - part) * rExit
+        nTrades += 1
+        nWins   += tradeR > 0 ? 1 : 0
+        sumR    += tradeR
+        exitDir := pos
+        evExit  := true
+        pos     := 0
+
+    // D) Yeni giriş
+    if pos == 0 and cdOk
+        if longSetup or shortSetup
+            int dir = longSetup ? 1 : -1
+            float r = slMode == "ATR" ? atr * slAtrMult : dir == 1 ? math.max(close - swingLo + atr * swingBuf, atr * 0.5) : math.max(swingHi - close + atr * swingBuf, atr * 0.5)
+            pos          := dir
+            entryPx      := close
+            riskPx       := r
+            slPx         := close - r * dir
+            tp1Px        := close + r * tp1R * dir
+            tp2Px        := close + r * tp2R * dir
+            tp1Done      := false
+            entryBar     := bar_index
+            lastEntryBar := bar_index
+            evLong       := dir == 1
+            evShort      := dir == -1
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5) ÇİZİMLER: SMA, SuperTrend, Seviyeler, Mum rengi
+// ─────────────────────────────────────────────────────────────────────────────
+plot(showSMAs ? sma34 : na, "SMA34", color=color.white,  linewidth=2)
+plot(showSMAs ? sma5  : na, "SMA5",  color=color.orange)
+plot(showSMAs ? sma11 : na, "SMA11", color=color.blue)
+
+plot(showST and stBull     ? stLine : na, "SuperTrend ▲", color=color.new(color.lime, 30), linewidth=1, style=plot.style_linebr)
+plot(showST and not stBull ? stLine : na, "SuperTrend ▼", color=color.new(color.red,  30), linewidth=1, style=plot.style_linebr)
+
+showLv = showTPSL and (pos != 0 or evExit)
+plot(showLv ? entryPx : na,             "Giriş Seviyesi", color=color.new(color.gray, 0), linewidth=1, style=plot.style_linebr)
+plot(showLv ? slPx : na,                "SL",             color=color.red,  linewidth=2, style=plot.style_linebr)
+plot(showLv and useTPSL ? tp1Px : na,   "TP1",            color=color.teal, linewidth=1, style=plot.style_linebr)
+plot(showLv and useTPSL ? tp2Px : na,   "TP2",            color=color.lime, linewidth=2, style=plot.style_linebr)
+
+// QQE histogramı fiyat ölçeğini bozmasın diye sadece Veri Penceresinde
+plot(qqeHist, "QQE Hist", display=display.data_window)
+plot(longScore,  "Long Skor",  display=display.data_window)
+plot(shortScore, "Short Skor", display=display.data_window)
+
+barcolor(barColOn ? (qqeHist > thresh ? color.lime : qqeHist < -thresh ? color.red : color.gray) : na)
+
+// Giriş / çıkış etiketleri
+if showLbl and evExit and exitWhy != "TERS"
+    color  cE = tradeR > 0 ? color.new(color.lime, 0) : tradeR < 0 ? color.new(color.red, 0) : color.gray
+    string tE = exitWhy + " " + (tradeR >= 0 ? "+" : "") + str.tostring(tradeR, "#.##") + "R"
+    label.new(bar_index, close, tE, yloc=exitDir == 1 ? yloc.abovebar : yloc.belowbar, style=exitDir == 1 ? label.style_label_down : label.style_label_up, color=cE, textcolor=tradeR < 0 ? color.white : color.black, size=size.small, tooltip="Çıkış: " + f_px(exitPx))
+
+if showLbl and evTP1 and not evExit
+    label.new(bar_index, tp1Px, "TP1 ✓", style=pos == 1 ? label.style_label_down : label.style_label_up, color=color.teal, textcolor=color.white, size=size.tiny)
+
+if showLbl and (evLong or evShort)
+    string tN = (evLong ? "LONG" : "SHORT") + " ★" + str.tostring(evLong ? longScore : shortScore) + "/6"
+    if evExit and exitWhy == "TERS"
+        tN += "\n(önceki " + (tradeR >= 0 ? "+" : "") + str.tostring(tradeR, "#.##") + "R)"
+    string tip = "Giriş: " + f_px(entryPx) + "\nSL: " + f_px(slPx) + "\nTP1: " + f_px(tp1Px) + "\nTP2: " + f_px(tp2Px) + "\nRisk: %" + str.tostring(riskPx / entryPx * 100, "#.##")
+    label.new(bar_index, close, tN, yloc=evLong ? yloc.belowbar : yloc.abovebar, style=evLong ? label.style_label_up : label.style_label_down, color=evLong ? color.lime : color.red, textcolor=evLong ? color.black : color.white, size=size.normal, tooltip=tip)
+
+// Son barda seviye fiyat etiketleri
+var label lbE   = na
+var label lbSL  = na
+var label lbTP1 = na
+var label lbTP2 = na
+if barstate.islast
+    if showTPSL and pos != 0
+        lbE  := f_updLbl(lbE,  entryPx, "GİRİŞ " + f_px(entryPx), color.gray, 3, size.small)
+        lbSL := f_updLbl(lbSL, slPx, (tp1Done and moveBE ? "SL (BE) " : "SL ") + f_px(slPx), color.red, 3, size.small)
+        if useTPSL
+            lbTP1 := f_updLbl(lbTP1, tp1Px, "TP1 " + f_px(tp1Px) + (tp1Done ? " ✓" : ""), color.teal, 3, size.small)
+            lbTP2 := f_updLbl(lbTP2, tp2Px, "TP2 " + f_px(tp2Px), color.green, 3, size.small)
+    else
+        lbE   := f_delLbl(lbE)
+        lbSL  := f_delLbl(lbSL)
+        lbTP1 := f_delLbl(lbTP1)
+        lbTP2 := f_delLbl(lbTP2)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6) HTF BÖLGE (önceki kapanmış HTF mumunun High/Low/Mid/Close'u, repaint yok)
+// ─────────────────────────────────────────────────────────────────────────────
+[zH, zL, zC] = request.security(syminfo.tickerid, zoneTf, [high[1], low[1], close[1]], lookahead=barmerge.lookahead_on)
+zM     = (zH + zL) / 2
+zoneOk = show4H and timeframe.in_seconds() < timeframe.in_seconds(zoneTf)
+zSec   = timeframe.in_seconds(zoneTf)
+zName  = zSec % 3600 == 0 and zSec < 86400 ? str.tostring(zSec / 3600) + "S" : zoneTf
+
+var line     zLineH  = na
+var line     zLineL  = na
+var line     zLineM  = na
+var line     zLineC  = na
+var linefill zFillUp = na
+var linefill zFillDn = na
+var label    zLblC   = na
+
+if barstate.islast and zoneOk and not na(zH) and not na(zL)
+    zLineH := f_setLine(zLineH, zH, color4H_High, 2, line.style_dashed)
+    zLineL := f_setLine(zLineL, zL, color4H_Low,  2, line.style_dashed)
+    zLineM := f_setLine(zLineM, zM, color.new(color.gray, 50), 1, line.style_dotted)
+    if na(zFillUp)
+        zFillUp := linefill.new(zLineH, zLineM, color.new(color.green, transpZone))
+    if na(zFillDn)
+        zFillDn := linefill.new(zLineM, zLineL, color.new(color.red, transpZone))
+    if show4HClose and not na(zC)
+        color cC = zC >= zM ? color.green : color.red
+        zLineC := f_setLine(zLineC, zC, cC, 2, line.style_dotted)
+        if show4HCloseLb
+            zLblC := f_updLbl(zLblC, zC, zName + " KAPANIŞ " + (zC >= zM ? "(PREMIUM)" : "(DISCOUNT)"), cC, closeLblXOff, size.small)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7) YOĞUN DESTEK / DİRENÇ (pivot kümeleme, rol değişimi dahil)
+//    Pivot tepe ve dipler TEK havuzda toplanır; fiyatın üstündekiler direnç,
+//    altındakiler destek olarak seçilir (kırılan direnç → destek).
+// ─────────────────────────────────────────────────────────────────────────────
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+var float[] srLvl  = array.new_float()
+var int[]   srHit  = array.new_int()
+var int[]   srLast = array.new_int()
+
+f_addPivot(_lvlArr, _hitArr, _lastArr, _price, _tol, _max, _touchBar) =>
+    int   n        = array.size(_lvlArr)
+    int   bestIdx  = -1
+    float bestDist = 1e20
+    if n > 0
+        for i = 0 to n - 1
+            float d = math.abs(array.get(_lvlArr, i) - _price)
+            if d <= _tol and d < bestDist
+                bestDist := d
+                bestIdx  := i
+    if bestIdx != -1
+        int   h     = array.get(_hitArr, bestIdx)
+        float lvOld = array.get(_lvlArr, bestIdx)
+        array.set(_lvlArr, bestIdx, (lvOld * h + _price) / (h + 1))
+        array.set(_hitArr, bestIdx, h + 1)
+        array.set(_lastArr, bestIdx, _touchBar)
+    else
+        array.push(_lvlArr, _price)
+        array.push(_hitArr, 1)
+        array.push(_lastArr, _touchBar)
+        if array.size(_lvlArr) > _max
+            int minIdx = 0
+            int minH   = array.get(_hitArr, 0)
+            int minL   = array.get(_lastArr, 0)
+            for k = 1 to array.size(_hitArr) - 1
+                int hk = array.get(_hitArr, k)
+                int lk = array.get(_lastArr, k)
+                if hk < minH or (hk == minH and lk < minL)
+                    minH   := hk
+                    minL   := lk
+                    minIdx := k
+            array.remove(_lvlArr, minIdx)
+            array.remove(_hitArr, minIdx)
+            array.remove(_lastArr, minIdx)
+    true
+
+if showSR and not na(atr)
+    float tol = atr * srTolAtrMul
+    if not na(ph)
+        f_addPivot(srLvl, srHit, srLast, ph, tol, srMaxLevels, bar_index - pivotLen)
+    if not na(pl)
+        f_addPivot(srLvl, srHit, srLast, pl, tol, srMaxLevels, bar_index - pivotLen)
+
+// _side: 1 = fiyatın üstü (direnç), -1 = fiyatın altı (destek)
+f_top2(_minLast, _maxDist, _side) =>
+    int n  = array.size(srLvl)
+    int i1 = -1
+    int i2 = -1
+    int h1 = -1
+    int h2 = -1
+    if n > 0
+        for i = 0 to n - 1
+            float lv = array.get(srLvl, i)
+            int   h  = array.get(srHit, i)
+            int   l  = array.get(srLast, i)
+            bool okSide = _side == 1 ? lv > close : lv < close
+            if okSide and h >= srMinHits and l >= _minLast and math.abs(lv - close) <= _maxDist
+                if h > h1
+                    h2 := h1
+                    i2 := i1
+                    h1 := h
+                    i1 := i
+                else if h > h2
+                    h2 := h
+                    i2 := i
+    [i1, i2, h1, h2]
+
+f_drawSR(_ln, _lb, _idx, _hits, _name, _col, _w) =>
+    line  ln = _ln
+    label lb = _lb
+    if _idx != -1
+        float y = array.get(srLvl, _idx)
+        ln := f_updHLine(ln, y, _col, _w, srLookback)
+        if showHitsLbl
+            lb := f_updLbl(lb, y, _name + " • " + str.tostring(_hits) + " temas • " + f_px(y), _col, lblXOffset, lblSize)
+        else
+            lb := f_delLbl(lb)
+    else
+        ln := f_delLine(ln)
+        lb := f_delLbl(lb)
+    [ln, lb]
+
+var line  srR1 = na
+var line  srR2 = na
+var line  srS1 = na
+var line  srS2 = na
+var label lbR1 = na
+var label lbR2 = na
+var label lbS1 = na
+var label lbS2 = na
+
+if barstate.islast and showSR
+    int   minLast = srRecentOnly ? bar_index - srLookback : -100000000
+    float maxD    = atr * srMaxDistATR
+    [iR1, iR2, hR1, hR2] = f_top2(minLast, maxD, 1)
+    [iS1, iS2, hS1, hS2] = f_top2(minLast, maxD, -1)
+    [a1, b1] = f_drawSR(srR1, lbR1, iR1, hR1, "R1", colRes, 2)
+    [a2, b2] = f_drawSR(srR2, lbR2, iR2, hR2, "R2", color.new(colRes, 35), 1)
+    [a3, b3] = f_drawSR(srS1, lbS1, iS1, hS1, "S1", colSup, 2)
+    [a4, b4] = f_drawSR(srS2, lbS2, iS2, hS2, "S2", color.new(colSup, 35), 1)
+    srR1 := a1
+    lbR1 := b1
+    srR2 := a2
+    lbR2 := b2
+    srS1 := a3
+    lbS1 := b3
+    srS2 := a4
+    lbS2 := b4
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8) BİLGİ PANELİ
+// ─────────────────────────────────────────────────────────────────────────────
+tblPos = tablePosIn == "Sağ Alt" ? position.bottom_right : tablePosIn == "Sol Üst" ? position.top_left : tablePosIn == "Sol Alt" ? position.bottom_left : position.top_right
+var table dash = table.new(tblPos, 2, 14, bgcolor=color.new(color.black, 25), frame_color=color.new(color.gray, 50), frame_width=1, border_color=color.new(color.gray, 80), border_width=1)
+
+f_row(_r, _k, _v, _c) =>
+    table.cell(dash, 0, _r, _k, text_color=color.silver, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, _r, _v, text_color=_c, text_size=size.small, text_halign=text.align_right)
+
+if showTable and barstate.islast
+    color cUp = color.lime
+    color cDn = color.red
+    color cN  = color.gray
+    table.cell(dash, 0, 0, "KRİPTO GÖZCÜ PRO", text_color=color.white, text_size=size.small, bgcolor=color.new(color.blue, 40))
+    table.cell(dash, 1, 0, syminfo.ticker + " • " + timeframe.period, text_color=color.white, text_size=size.small, bgcolor=color.new(color.blue, 40))
+    f_row(1, "Trend (SMA)", trendLong ? "YUKARI ▲" : trendShort ? "AŞAĞI ▼" : "KARARSIZ", trendLong ? cUp : trendShort ? cDn : cN)
+    f_row(2, "QQE", (qqeHist > thresh ? "AL GÜCÜ " : qqeHist < -thresh ? "SAT GÜCÜ " : "NÖTR ") + str.tostring(rsiC, "#.0"), qqeHist > thresh ? cUp : qqeHist < -thresh ? cDn : cN)
+    f_row(3, "ADX", str.tostring(adxV, "#.0") + (adxV >= adxMin ? " trend" : " yatay"), adxV >= adxMin ? color.yellow : cN)
+    f_row(4, "Hacim / Ort.", na(volRatio) ? "-" : str.tostring(volRatio, "#.00") + "x", nz(volRatio) >= volMult ? color.yellow : cN)
+    f_row(5, "HTF EMA" + str.tostring(htfLen), na(htfEma) ? "-" : close > htfEma ? "ÜSTÜNDE" : "ALTINDA", na(htfEma) ? cN : close > htfEma ? cUp : cDn)
+    f_row(6, "SuperTrend", stBull ? "YUKARI ▲" : "AŞAĞI ▼", stBull ? cUp : cDn)
+    f_row(7, "Skor Long | Short", str.tostring(longScore) + "/6 | " + str.tostring(shortScore) + "/6", longScore > shortScore ? cUp : shortScore > longScore ? cDn : cN)
+    f_row(8, "Pozisyon", pos == 1 ? "LONG (" + str.tostring(bar_index - entryBar) + " bar)" : pos == -1 ? "SHORT (" + str.tostring(bar_index - entryBar) + " bar)" : "YOK", pos == 1 ? cUp : pos == -1 ? cDn : cN)
+    float curR = pos != 0 ? (close - entryPx) / riskPx * pos : na
+    f_row(9, "Giriş", pos != 0 ? f_px(entryPx) : "-", color.white)
+    f_row(10, "Anlık K/Z", pos != 0 ? (curR >= 0 ? "+" : "") + str.tostring(curR, "#.##") + "R" : "-", na(curR) ? cN : curR >= 0 ? cUp : cDn)
+    f_row(11, "SL", pos != 0 ? f_px(slPx) + (tp1Done and moveBE ? " (BE)" : "") : "-", cDn)
+    f_row(12, "TP1 | TP2", pos != 0 and useTPSL ? f_px(tp1Px) + (tp1Done ? "✓" : "") + " | " + f_px(tp2Px) : "-", color.teal)
+    string st = nTrades > 0 ? str.tostring(nTrades) + " işlem • %" + str.tostring(nWins * 100.0 / nTrades, "#") + " • " + (sumR >= 0 ? "+" : "") + str.tostring(sumR, "#.#") + "R" : "-"
+    f_row(13, "Geçmiş (yaklaşık)", st, sumR >= 0 ? cUp : cDn)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9) ALARMLAR
+// ─────────────────────────────────────────────────────────────────────────────
+alertcondition(evLong,            "LONG Giriş",       "KG PRO LONG {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evShort,           "SHORT Giriş",      "KG PRO SHORT {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evLong or evShort, "Herhangi Giriş",   "KG PRO GİRİŞ {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evTP1,             "TP1 Gerçekleşti",  "KG PRO TP1 {{ticker}} {{interval}} @ {{close}}")
+alertcondition(evExit,            "Pozisyon Kapandı", "KG PRO ÇIKIŞ {{ticker}} {{interval}} @ {{close}}")
+
+alertFreq = useClose ? alert.freq_once_per_bar_close : alert.freq_once_per_bar
+if dynAlert
+    if evExit
+        alert("KG PRO ÇIKIŞ [" + exitWhy + "] " + (exitDir == 1 ? "LONG" : "SHORT") + " " + syminfo.ticker + " " + timeframe.period + " @ " + f_px(exitPx) + " | Sonuç: " + str.tostring(tradeR, "#.##") + "R", alertFreq)
+    if evLong or evShort
+        alert("KG PRO " + (evLong ? "LONG" : "SHORT") + " " + syminfo.ticker + " " + timeframe.period + " | Giriş: " + f_px(entryPx) + " | SL: " + f_px(slPx) + " | TP1: " + f_px(tp1Px) + " | TP2: " + f_px(tp2Px) + " | Skor: " + str.tostring(evLong ? longScore : shortScore) + "/6", alertFreq)
+    if evTP1 and not evExit
+        alert("KG PRO TP1 ✓ " + syminfo.ticker + " " + timeframe.period + " @ " + f_px(tp1Px) + (moveBE ? " | Stop girişe çekildi (BE)" : ""), alertFreq)
